@@ -35,7 +35,7 @@
 | `silenceMs` | `1000` | 多久静音算一句话结束（详情页可改，改完写入 profile） |
 | `maxUtteranceMs` | `45000` | 单句最长时长，防止一口气说不停 |
 | `language` | `zh` | 识别语言：`zh`、`en`、`yue`、`ja`、`ko`、`auto` |
-| `autoSend` | `true` | 关掉后只转写、不自动发送 |
+| `autoSend` | `true` | 关掉后逐句追加到输入框、不自动发送（自己按回车） |
 | `device` | 默认输出 | loopback 设备名的一部分 |
 
 模型数据目录由语音服务管理，重复安装或禁用插件都不会重新下载。

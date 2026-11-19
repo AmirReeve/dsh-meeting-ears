@@ -31,7 +31,7 @@ window.__ModuleLoader__.load({
       deviceAuto: '跟随系统默认',
       refreshDevices: '刷新设备',
       autoSend: '自动发送',
-      autoSendHelp: '关闭后只转写，需手动点“插入”',
+      autoSendHelp: '关闭后逐句追加到输入框，不自动发送（自己按回车）',
       language: '识别语言',
       save: '保存',
       saved: '已保存',
@@ -60,7 +60,7 @@ window.__ModuleLoader__.load({
       deviceAuto: 'Follow system default',
       refreshDevices: 'Refresh devices',
       autoSend: 'Send automatically',
-      autoSendHelp: 'When off, transcripts wait for Insert',
+      autoSendHelp: 'When off, each sentence is appended to the draft without sending',
       language: 'Recognition language',
       save: 'Save',
       saved: 'Saved',
@@ -191,14 +191,27 @@ window.__ModuleLoader__.load({
 
       const flush = () => {
         if (!inputActions || typeof inputActions.setDraft !== 'function') return
-        if (lockedRef.current || !idleRef.current) return
-        if (!store.get().view?.autoSend) return
-        const item = queue.current.shift()
-        if (item === undefined) return
-        inputActions.setDraft(item.text)
-        inputActions.submit()
+        if (lockedRef.current) return
+        if (store.get().view?.autoSend) {
+          if (!idleRef.current) return
+          const item = queue.current.shift()
+          if (item === undefined) return
+          inputActions.setDraft(item.text)
+          inputActions.submit()
+          store.set({ pending: queue.current.length, pendingTexts: queue.current.map(entry => entry.text) })
+          if (typeof sent === 'function') void sent({ seq: item.seq, chars: item.text.length }).catch(() => {})
+          return
+        }
+        // Auto-send off: append each finished sentence to the draft as it arrives,
+        // so the composer reads like a live transcript the user submits themselves.
+        if (typeof inputActions.insertText !== 'function') return
+        while (queue.current.length > 0) {
+          const item = queue.current[0]
+          const span = inputActions.captureInsertion()
+          if (!inputActions.insertText(item.text, span)) break
+          queue.current.shift()
+        }
         store.set({ pending: queue.current.length, pendingTexts: queue.current.map(entry => entry.text) })
-        if (typeof sent === 'function') void sent({ seq: item.seq, chars: item.text.length }).catch(() => {})
       }
 
       React.useEffect(() => {
