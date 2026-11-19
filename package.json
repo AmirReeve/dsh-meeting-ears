@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Listen to the system audio output, transcribe it locally, and send the merged speech to the conversation composer.",
+  "license": "MIT",
+  "keywords": ["deepseek-harness", "dsh", "dsh-plugin", "speech-to-text", "wasapi", "sensevoice"],
+  "repository": { "type": "git", "url": "git+https://github.com/AmirReeve/dsh-meeting-ears.git" },
+  "homepage": "https://github.com/AmirReeve/dsh-meeting-ears#readme",
+  "bugs": { "url": "https://github.com/AmirReeve/dsh-meeting-ears/issues" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
