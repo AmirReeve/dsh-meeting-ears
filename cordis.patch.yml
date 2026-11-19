@@ -1,0 +1,9 @@
+- insert:
+    - id: meeting-ears
+      name: '@local/dsh-meeting-ears'
+      config:
+        pythonPath: python
+        silenceMs: 1000
+        maxUtteranceMs: 45000
+        language: zh
+        autoSend: true

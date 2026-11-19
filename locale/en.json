@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Meeting ears",
+    "description": "Listen to the system audio output, transcribe it with the local speech model, and send each finished sentence to the composer.",
+    "detail": "docs/DETAIL.md"
+  }
+}
