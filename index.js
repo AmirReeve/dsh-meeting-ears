@@ -1,5 +1,5 @@
 /** Host half: capture system audio, transcribe it locally, expose the transcript to the composer UI. */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,8 @@ export function apply(ctx, config = {}) {
     autoSend: config.autoSend !== false,
     device: typeof config.device === 'string' ? config.device : '',
   }
+  /** Profile entry id used by the settings service; absent when mounted without the Loader. */
+  const entryId = ctx.fiber?.entry?.options?.id
 
   const state = {
     phase: 'idle',
@@ -56,6 +58,39 @@ export function apply(ctx, config = {}) {
       } catch (_error) {
         // Diagnostics are optional.
       }
+    }
+
+    /** Save changed settings into this plugin's profile entry so they survive a restart. */
+    const persist = async (patch) => {
+      const settings = scope.get('settings')
+      if (settings === undefined || entryId === undefined) return
+      try {
+        await settings.update(entryId, patch)
+      } catch (error) {
+        note(`settings persist failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    /** Enumerate loopback endpoints on demand (used by the settings page). */
+    const listDevices = async () => {
+      const result = spawnSync(options.pythonPath, ['-u', options.helperPath, '--list-devices'],
+        { encoding: 'utf8', timeout: 20000, windowsHide: true })
+      if (result.status === 0 && typeof result.stdout === 'string') {
+        for (const line of result.stdout.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('{')) continue
+          try {
+            const parsed = JSON.parse(trimmed)
+            if (Array.isArray(parsed.devices)) {
+              state.devices = parsed.devices
+              return parsed.devices
+            }
+          } catch (_error) {
+            // Ignore malformed lines.
+          }
+        }
+      }
+      return state.devices
     }
 
     const prepPhase = () => {
@@ -95,6 +130,8 @@ export function apply(ctx, config = {}) {
         prep,
         silenceMs: options.silenceMs,
         devicePin: options.device,
+        language: options.language,
+        pythonPath: options.pythonPath,
         latest: state.segments.length === 0 ? 0 : state.segments[state.segments.length - 1].seq,
         autoSend: state.autoSend,
         segments: state.segments,
@@ -291,21 +328,40 @@ export function apply(ctx, config = {}) {
             return { ok: true, value: describe() }
           case 'configure': {
             let changed = false
+            let audioChanged = false
+            const patch = {}
             const nextSilence = Number(payload?.silenceMs)
             if (Number.isFinite(nextSilence) && nextSilence >= 200 && nextSilence <= 10000) {
               options.silenceMs = Math.round(nextSilence)
+              patch.silenceMs = options.silenceMs
               changed = true
+              audioChanged = true
             }
-            if (typeof payload?.device === 'string') {
+            if (typeof payload?.device === 'string' && payload.device !== options.device) {
               options.device = payload.device
+              patch.device = options.device
+              changed = true
+              audioChanged = true
+            }
+            if (typeof payload?.language === 'string' && payload.language !== options.language) {
+              options.language = payload.language
+              patch.language = options.language
               changed = true
             }
-            if (changed && !stopped) {
+            if (typeof payload?.autoSend === 'boolean' && payload.autoSend !== state.autoSend) {
+              state.autoSend = payload.autoSend
+              patch.autoSend = payload.autoSend
+              changed = true
+            }
+            if (changed) await persist(patch)
+            if (audioChanged && !stopped) {
               stop()
               start()
             }
             return { ok: true, value: describe() }
           }
+          case 'devices':
+            return { ok: true, value: await listDevices() }
           case 'sent':
             note(`sent seq=${Number(payload?.seq) || 0} chars=${Number(payload?.chars) || 0}`)
             return { ok: true, value: null }

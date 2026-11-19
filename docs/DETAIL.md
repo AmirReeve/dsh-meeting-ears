@@ -12,9 +12,10 @@ Turn whatever the computer is playing (Tencent Meeting, Feishu calls, a video, a
 ## Usage
 
 1. Enable the bundle. Recognition uses DSH's speech service, so the official **Voice input** bundle must be enabled too (it provides the local SenseVoice model).
-2. A **Meeting ears** pill appears under the composer. The first click downloads SenseVoice when missing (INT8, about 240 MB, from Hugging Face or HF-Mirror) and shows progress on the same row; capture starts only once it is ready.
-3. Play a talking video: after a sentence and a ~2 s pause the text is placed in the composer and sent.
-4. The row shows a live level meter, the latest sentence, and how many are pending.
+2. An **ear** button appears in the composer tool row, next to the microphone. The first click downloads SenseVoice when missing (INT8, about 240 MB, from Hugging Face or HF-Mirror) and shows progress on the status line; capture starts only once it is ready.
+3. Play a talking video: after a sentence and more silence than the configured window, the text is placed in the composer and sent.
+4. While listening the strip under the composer shows one line only: stop, level, latest sentence, pending count — no dropdowns.
+5. Silence window (ms), capture device, language, and auto-send live in **Listening settings** on this plugin's detail page; saving writes them into your profile.
 
 ## Requirements and limits
 
