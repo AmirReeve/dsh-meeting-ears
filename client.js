@@ -8,7 +8,10 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const NS = 'meeting-ears'
-    const POLL_MS = 300
+    const POLL_MS = 150
+    /** My own sentences ride along with the next remote sentence, but not forever. */
+    const CONTEXT_TTL_MS = 120000
+    const CONTEXT_MAX_LINES = 6
 
     const zh = {
       title: '会议耳朵',
@@ -29,6 +32,16 @@ window.__ModuleLoader__.load({
       silenceHelp: '对方说完后停顿多久算一句结束，200–10000 ms',
       device: '采集设备',
       deviceAuto: '跟随系统默认',
+      mic: '同时采集我的麦克风',
+      micHelp: '把你自己说的话也转写进来，标成“我”；用扬声器时自动去掉回声',
+      micDevice: '麦克风设备',
+      micDeviceAuto: '跟随系统默认麦克风',
+      onlyQuestions: '只把对方的问题发给我',
+      onlyQuestionsHelp: '打开后，对方的陈述句只作为上下文；只有问句才触发发送',
+      judge: '用模型判断是不是问题',
+      judgeHelp: '比关键词准得多，代价是每句多一次小模型调用（约 0.3~0.8 秒）',
+      judgeModel: '判断用的模型',
+      judgeModelNone: '未选择（退回关键词规则）',
       refreshDevices: '刷新设备',
       autoSend: '自动发送',
       autoSendHelp: '关闭后逐句追加到输入框，不自动发送（自己按回车）',
@@ -58,6 +71,16 @@ window.__ModuleLoader__.load({
       silenceHelp: 'Silence after speech that ends a sentence, 200–10000 ms',
       device: 'Capture device',
       deviceAuto: 'Follow system default',
+      mic: 'Also capture my microphone',
+      micHelp: 'Transcribes your own voice as “我”; speaker echo is dropped automatically',
+      micDevice: 'Microphone',
+      micDeviceAuto: 'Follow system default microphone',
+      onlyQuestions: 'Send only questions from the other side',
+      onlyQuestionsHelp: 'When on, statements become context and only questions trigger a send',
+      judge: 'Use a model to decide what is a question',
+      judgeHelp: 'Far more accurate than keywords; costs one small model call per sentence (0.3–0.8 s)',
+      judgeModel: 'Judge model',
+      judgeModelNone: 'None (fall back to keywords)',
       refreshDevices: 'Refresh devices',
       autoSend: 'Send automatically',
       autoSendHelp: 'When off, each sentence is appended to the draft without sending',
@@ -176,6 +199,8 @@ window.__ModuleLoader__.load({
       const view = snapshot.view
       const cursor = React.useRef(-1)
       const queue = React.useRef([])
+      const context = React.useRef([])
+      const signatureRef = React.useRef('')
       const inflight = React.useRef(false)
       const lockedRef = React.useRef(locked)
       lockedRef.current = locked
@@ -194,22 +219,42 @@ window.__ModuleLoader__.load({
         if (lockedRef.current) return
         if (store.get().view?.autoSend) {
           if (!idleRef.current) return
-          const item = queue.current.shift()
-          if (item === undefined) return
-          inputActions.setDraft(item.text)
-          inputActions.submit()
+          // My own speech never sends on its own: it becomes context that rides
+          // along with the next sentence from the other side.
+          let item
+          while (queue.current.length > 0) {
+            const head = queue.current[0]
+            if (!head.trigger) {
+              context.current.push(head)
+              queue.current.shift()
+              continue
+            }
+            item = queue.current.shift()
+            break
+          }
           store.set({ pending: queue.current.length, pendingTexts: queue.current.map(entry => entry.text) })
+          if (item === undefined) return
+          const cutoff = Date.now() - CONTEXT_TTL_MS
+          const fresh = context.current.filter(entry => entry.at >= cutoff).slice(-CONTEXT_MAX_LINES)
+          context.current = []
+          const lines = [...fresh.map(entry => entry.text), item.text]
+          inputActions.setDraft(lines.join('\n'))
+          inputActions.submit()
           if (typeof sent === 'function') void sent({ seq: item.seq, chars: item.text.length }).catch(() => {})
           return
         }
         // Auto-send off: append each finished sentence to the draft as it arrives,
         // so the composer reads like a live transcript the user submits themselves.
         if (typeof inputActions.insertText !== 'function') return
-        while (queue.current.length > 0) {
-          const item = queue.current[0]
+        const pendingAll = [...context.current, ...queue.current]
+        context.current = []
+        queue.current = []
+        for (const item of pendingAll) {
           const span = inputActions.captureInsertion()
-          if (!inputActions.insertText(item.text, span)) break
-          queue.current.shift()
+          if (!inputActions.insertText(item.text, span)) {
+            queue.current.push(item)
+            break
+          }
         }
         store.set({ pending: queue.current.length, pendingTexts: queue.current.map(entry => entry.text) })
       }
@@ -217,6 +262,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         cursor.current = -1
         queue.current = []
+        context.current = []
         store.set({ pending: 0, lastText: '' })
       }, [sessionId])
 
@@ -235,15 +281,33 @@ window.__ModuleLoader__.load({
               for (const segment of next.segments || []) {
                 cursor.current = Math.max(cursor.current, segment.seq)
                 latest = segment.text
-                queue.current.push({ seq: segment.seq, text: segment.text })
+                queue.current.push({
+                  seq: segment.seq,
+                  text: segment.text,
+                  source: segment.source,
+                  // Only an explicit trigger may wake the agent; a segment from an
+                  // older Host without the flag stays context.
+                  trigger: segment.trigger === true,
+                  at: Date.now(),
+                })
               }
             }
-            store.set({
-              view: next,
-              lastText: latest !== '' ? latest : store.get().lastText,
-              pending: queue.current.length,
-              pendingTexts: queue.current.map(entry => entry.text),
-            })
+            const signature = [
+              next.phase, next.device, next.micDevice, next.error, next.latest,
+              Math.round((Number(next.level) || 0) * 10), next.mic, next.autoSend,
+              next.silenceMs, next.devicePin, next.micPin,
+            ].join('|')
+            const patch = {}
+            if (signatureRef.current !== signature) {
+              signatureRef.current = signature
+              patch.view = next
+            }
+            if (latest !== '') patch.lastText = latest
+            if (queue.current.length !== store.get().pending) {
+              patch.pending = queue.current.length
+              patch.pendingTexts = queue.current.map(entry => entry.text)
+            }
+            if (Object.keys(patch).length > 0) store.set(patch)
             flush()
           } catch (_error) {
             // A dropped transport recovers on the next successful poll.
@@ -315,24 +379,46 @@ window.__ModuleLoader__.load({
 
     /** Settings panel rendered on the bundle detail page. */
     function SettingsPanel(props) {
-      const { poll, configure, devices } = props
+      const { poll, configure, devices, models } = props
       const t = typeof props.t === 'function' ? props.t : key => key
       const [view, setView] = React.useState(null)
-      const [options, setOptions] = React.useState([])
+      const [speakers, setSpeakers] = React.useState([])
+      const [microphones, setMicrophones] = React.useState([])
       const [error, setError] = React.useState('')
       const [saving, setSaving] = React.useState(false)
       const [saved, setSaved] = React.useState(false)
-      const [draft, setDraft] = React.useState({ silenceMs: 1000, device: '', autoSend: true, language: 'zh' })
+      const [draft, setDraft] = React.useState({
+        silenceMs: 1000, device: '', mic: true, micDevice: '', autoSend: true,
+        onlyQuestions: true, judge: false, judgeProvider: '', judgeModel: '', language: 'zh',
+      })
+      const [modelOptions, setModelOptions] = React.useState([])
 
       const apply = next => {
         setView(next)
         setDraft({
           silenceMs: Number(next.silenceMs) || 1000,
           device: String(next.devicePin || ''),
+          mic: next.mic !== false,
+          micDevice: String(next.micPin || ''),
           autoSend: next.autoSend !== false,
+          onlyQuestions: next.onlyQuestions !== false,
+          judge: next.judge === true,
+          judgeProvider: String(next.judgeProvider || ''),
+          judgeModel: String(next.judgeModel || ''),
           language: String(next.language || 'zh'),
         })
-        if (Array.isArray(next.devices) && next.devices.length > 0) setOptions(next.devices)
+        if (Array.isArray(next.devices) && next.devices.length > 0) setSpeakers(next.devices)
+        if (Array.isArray(next.microphones) && next.microphones.length > 0) setMicrophones(next.microphones)
+      }
+
+      const refresh = async () => {
+        try {
+          const list = await devices()
+          if (Array.isArray(list?.speakers)) setSpeakers(list.speakers)
+          if (Array.isArray(list?.microphones)) setMicrophones(list.microphones)
+        } catch (_failure) {
+          // Keep the previous list.
+        }
       }
 
       React.useEffect(() => {
@@ -344,15 +430,18 @@ window.__ModuleLoader__.load({
           } catch (failure) {
             if (alive) setError(t('loadFailed', { message: String(failure && failure.message || failure) }))
           }
-          try {
-            const list = await devices()
-            if (alive && Array.isArray(list)) setOptions(list)
-          } catch (_failure) {
-            // The stored list stays usable.
+          if (alive) await refresh()
+          if (alive && typeof models === 'function') {
+            try {
+              const list = await models()
+              if (alive && Array.isArray(list)) setModelOptions(list)
+            } catch (_failure) {
+              // Keyword mode stays available without a model list.
+            }
           }
         })()
         return () => { alive = false }
-      }, [poll, devices])
+      }, [poll, devices, models])
 
       const save = async () => {
         setSaving(true)
@@ -361,7 +450,13 @@ window.__ModuleLoader__.load({
           const next = await configure({
             silenceMs: Number(draft.silenceMs) || 1000,
             device: draft.device,
+            mic: draft.mic,
+            micDevice: draft.micDevice,
             autoSend: draft.autoSend,
+            onlyQuestions: draft.onlyQuestions,
+            judge: draft.judge,
+            judgeProvider: draft.judgeProvider,
+            judgeModel: draft.judgeModel,
             language: draft.language,
           })
           apply(next)
@@ -374,8 +469,12 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const deviceOptions = ['', ...options]
-      if (draft.device !== '' && !deviceOptions.includes(draft.device)) deviceOptions.push(draft.device)
+      const speakerOptions = ['', ...speakers]
+      if (draft.device !== '' && !speakerOptions.includes(draft.device)) speakerOptions.push(draft.device)
+      const micOptions = ['', ...microphones]
+      if (draft.micDevice !== '' && !micOptions.includes(draft.micDevice)) micOptions.push(draft.micDevice)
+      const selectStyle = { ...styles.input, maxWidth: 320, colorScheme: 'dark' }
+      const optionStyle = { color: '#1b1f24', backgroundColor: '#ffffff' }
 
       return h('div', { style: styles.section },
         h('div', { style: styles.field },
@@ -391,23 +490,67 @@ window.__ModuleLoader__.load({
           h('span', { style: styles.label }, t('device')),
           h('div', { style: styles.inline },
             h('select', {
-              style: { ...styles.input, maxWidth: 320, colorScheme: 'dark' },
+              style: selectStyle,
               value: draft.device,
               onChange: event => setDraft({ ...draft, device: event.target.value }),
-            }, deviceOptions.map(value => h('option', {
-              key: value || 'auto', value, style: { color: '#1b1f24', backgroundColor: '#ffffff' },
-            }, value === '' ? t('deviceAuto') : value.replace(' [Loopback]', '')))),
-            h('button', {
-              type: 'button', style: styles.action,
-              onClick: async () => {
-                try {
-                  const list = await devices()
-                  if (Array.isArray(list)) setOptions(list)
-                } catch (_failure) {
-                  // Keep the previous list.
-                }
+            }, speakerOptions.map(value => h('option', { key: value || 'auto', value, style: optionStyle },
+              value === '' ? t('deviceAuto') : value.replace(' [Loopback]', '')))),
+            h('button', { type: 'button', style: styles.action, onClick: refresh }, t('refreshDevices')))),
+        h('div', { style: styles.field },
+          h('label', { style: styles.inline },
+            h('input', {
+              type: 'checkbox', checked: draft.mic,
+              onChange: event => setDraft({ ...draft, mic: event.target.checked }),
+            }),
+            h('span', { style: styles.label }, t('mic'))),
+          h('span', { style: styles.help }, t('micHelp'))),
+        draft.mic
+          ? h('div', { style: styles.field },
+            h('span', { style: styles.label }, t('micDevice')),
+            h('select', {
+              style: selectStyle,
+              value: draft.micDevice,
+              onChange: event => setDraft({ ...draft, micDevice: event.target.value }),
+            }, micOptions.map(value => h('option', { key: value || 'auto', value, style: optionStyle },
+              value === '' ? t('micDeviceAuto') : value))))
+          : null,
+        h('div', { style: styles.field },
+          h('label', { style: styles.inline },
+            h('input', {
+              type: 'checkbox', checked: draft.onlyQuestions,
+              onChange: event => setDraft({ ...draft, onlyQuestions: event.target.checked }),
+            }),
+            h('span', { style: styles.label }, t('onlyQuestions'))),
+          h('span', { style: styles.help }, t('onlyQuestionsHelp'))),
+        h('div', { style: styles.field },
+          h('label', { style: styles.inline },
+            h('input', {
+              type: 'checkbox', checked: draft.judge,
+              onChange: event => setDraft({ ...draft, judge: event.target.checked }),
+            }),
+            h('span', { style: styles.label }, t('judge'))),
+          h('span', { style: styles.help }, t('judgeHelp'))),
+        draft.judge
+          ? h('div', { style: styles.field },
+            h('span', { style: styles.label }, t('judgeModel')),
+            h('select', {
+              style: selectStyle,
+              value: draft.judgeProvider !== '' && draft.judgeModel !== ''
+                ? `${draft.judgeProvider}|${draft.judgeModel}`
+                : '',
+              onChange: event => {
+                const [provider, model] = String(event.target.value).split('|')
+                setDraft({ ...draft, judgeProvider: provider || '', judgeModel: model || '' })
               },
-            }, t('refreshDevices')))),
+            }, [
+              h('option', { key: 'none', value: '', style: optionStyle }, t('judgeModelNone')),
+              ...modelOptions.map(entry => h('option', {
+                key: `${entry.provider}|${entry.model}`,
+                value: `${entry.provider}|${entry.model}`,
+                style: optionStyle,
+              }, `${entry.name} · ${entry.provider}`)),
+            ]))
+          : null,
         h('div', { style: styles.field },
           h('label', { style: styles.inline },
             h('input', {
@@ -422,9 +565,7 @@ window.__ModuleLoader__.load({
             style: { ...styles.input, maxWidth: 200, colorScheme: 'dark' },
             value: draft.language,
             onChange: event => setDraft({ ...draft, language: event.target.value }),
-          }, ['zh', 'en', 'yue', 'ja', 'ko', 'auto'].map(value => h('option', {
-            key: value, value, style: { color: '#1b1f24', backgroundColor: '#ffffff' },
-          }, value)))),
+          }, ['zh', 'en', 'yue', 'ja', 'ko', 'auto'].map(value => h('option', { key: value, value, style: optionStyle }, value)))),
         h('div', { style: styles.inline },
           h('button', { type: 'button', style: styles.primary, disabled: saving, onClick: save },
             saving ? t('saving') : t('save')),
@@ -471,6 +612,7 @@ window.__ModuleLoader__.load({
           stop: () => call('stop'),
           poll: since => call('poll', { since }),
           configure: payload => call('configure', payload),
+          models: () => call('models'),
           devices: () => call('devices'),
           sent: payload => call('sent', payload),
         }
