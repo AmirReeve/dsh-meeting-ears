@@ -1,14 +1,32 @@
 {
-  "name": "@local/dsh-meeting-ears",
+  "name": "dsh-meeting-ears",
   "version": "0.1.0",
-  "private": true,
+  "description": "DeepSeek Harness bundle: transcribe the system audio output and your microphone locally, then send questions from the other side to the conversation.",
   "type": "module",
-  "description": "Listen to the system audio output, transcribe it locally, and send the merged speech to the conversation composer.",
   "license": "MIT",
-  "keywords": ["deepseek-harness", "dsh", "dsh-plugin", "speech-to-text", "wasapi", "sensevoice"],
-  "repository": { "type": "git", "url": "git+https://github.com/AmirReeve/dsh-meeting-ears.git" },
+  "author": "AmirReeve",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "speech-to-text",
+    "sensevoice",
+    "wasapi",
+    "loopback",
+    "meeting"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmirReeve/dsh-meeting-ears.git"
+  },
   "homepage": "https://github.com/AmirReeve/dsh-meeting-ears#readme",
   "bugs": { "url": "https://github.com/AmirReeve/dsh-meeting-ears/issues" },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "publishConfig": { "access": "public" },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -21,10 +39,12 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
-    "helper",
+    "helper/capture_helper.py",
     "locale/*.json",
     "docs",
-    "icon.svg"
+    "icon.svg",
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

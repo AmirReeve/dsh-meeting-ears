@@ -3,7 +3,7 @@
  * strip under the composer, and a settings panel on the plugin's detail page.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-meeting-ears',
+  id: 'dsh-meeting-ears',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -623,7 +623,7 @@ window.__ModuleLoader__.load({
           name: 'conversation.composer.dock', id: 'meeting-ears-status', order: 20, locale: NS, inject: () => actions,
         }, GuardedDock))
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-          name: 'plugins.bundle.config', key: '@local/dsh-meeting-ears', locale: NS, inject: () => actions,
+          name: 'plugins.bundle.config', key: 'dsh-meeting-ears', locale: NS, inject: () => actions,
         }, GuardedSettings))
         void call('poll', { since: -1 }).catch(() => {})
       },
